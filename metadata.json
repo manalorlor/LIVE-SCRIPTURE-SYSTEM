@@ -1,0 +1,7 @@
+{
+  "name": "LIVE SCRIPTURE SYSTEM",
+  "description": "Real-time voice-activated Bible verse display system for church services using Gemini Live API.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
