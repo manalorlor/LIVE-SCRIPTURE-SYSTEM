@@ -1,16 +1,16 @@
 import { GoogleGenAI, LiveServerMessage, Modality, Type, FunctionDeclaration, Blob } from '@google/genai';
 import { ScriptureReference, AppMode } from '../types';
 
-// Define tools
+// Define tools with explicit descriptions and safe types
 const revealScriptureTool: FunctionDeclaration = {
   name: 'revealScripture',
-  description: 'Display a specific Bible verse or whole chapter.',
+  description: 'Display a specific Bible verse or whole chapter. Use this when the user asks to see a verse.',
   parameters: {
     type: Type.OBJECT,
     properties: {
-      book: { type: Type.STRING },
-      chapter: { type: Type.INTEGER },
-      verse: { type: Type.STRING },
+      book: { type: Type.STRING, description: 'The name of the Bible book' },
+      chapter: { type: Type.NUMBER, description: 'The chapter number' },
+      verse: { type: Type.STRING, description: 'The verse number or range (e.g., "1", "1-5")' },
     },
     required: ['book', 'chapter'],
   },
@@ -24,7 +24,8 @@ const controlReadingTool: FunctionDeclaration = {
     properties: {
       command: {
         type: Type.STRING,
-        enum: ['start', 'stop', 'enable_auto', 'disable_auto']
+        enum: ['start', 'stop', 'enable_auto', 'disable_auto'],
+        description: 'The command to execute'
       },
     },
     required: ['command'],
@@ -55,9 +56,9 @@ const displayNamedContentTool: FunctionDeclaration = {
     properties: {
       title: { type: Type.STRING, description: 'Title of the story, parable, or song' },
       book: { type: Type.STRING, description: 'Bible book (Required for story/parable)' },
-      chapter: { type: Type.INTEGER, description: 'Bible chapter (Required for story/parable)' },
+      chapter: { type: Type.NUMBER, description: 'Bible chapter (Required for story/parable)' },
       verse: { type: Type.STRING, description: 'Bible verse range (Optional)' },
-      mode: { type: Type.STRING, enum: ['story', 'parable', 'song'] },
+      mode: { type: Type.STRING, enum: ['story', 'parable', 'song'], description: 'The type of content' },
     },
     required: ['title', 'mode'],
   },
@@ -98,7 +99,7 @@ export class GeminiLiveService {
       this.isConnected = true;
 
       // Initialize Input Context
-      // Attempt to ask for 16kHz, but the browser might provide the native hardware rate.
+      // Attempt to ask for 16kHz, but the browser might provide the native hardware rate (e.g., 44.1k or 48k).
       this.inputAudioContext = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
       
       // Resume context if suspended (must be done after user gesture, which calls connect)
@@ -133,7 +134,7 @@ export class GeminiLiveService {
                 if (fc.name === 'revealScripture') {
                   const ref: ScriptureReference = {
                     book: args.book,
-                    chapter: args.chapter,
+                    chapter: Number(args.chapter),
                     verse: args.verse ? String(args.verse) : undefined,
                   };
                   onVerseDetected(ref);
@@ -150,7 +151,7 @@ export class GeminiLiveService {
                 } else if (fc.name === 'displayNamedContent') {
                    const ref: ScriptureReference = {
                     book: args.book || '',
-                    chapter: args.chapter || 0,
+                    chapter: Number(args.chapter) || 0,
                     verse: args.verse ? String(args.verse) : undefined,
                   };
                   onContentDetected(args.title, ref, args.mode as AppMode);
@@ -171,7 +172,8 @@ export class GeminiLiveService {
             }
           },
           onerror: (e: any) => {
-             console.error("Gemini Live API Error Details:", e);
+             // Only log serious errors, ignore generic close/reset
+             console.error("Gemini Live API Error:", e);
              if (this.isConnected) {
                  const msg = e instanceof Error ? e.message : (e.message || JSON.stringify(e));
                  onError(new Error(`Gemini Live Error: ${msg}`));
@@ -188,28 +190,30 @@ export class GeminiLiveService {
         config: {
           responseModalities: [Modality.AUDIO],
           speechConfig: {
-            voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } },
+            voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Zephyr' } },
           },
           tools: [{ functionDeclarations: [revealScriptureTool, controlReadingTool, switchTabTool, displayNamedContentTool] }],
           systemInstruction: `
-            You are a church service assistant. Listen for Bible references, songs, and commands.
+            You are a skilled and reverent church worship leader. Your voice is melodious, clear, and comforting.
             
             1. **Songs / Hymns**:
-               - If the user asks for a song (e.g., "Sing Amazing Grace", "Show Holy Holy Holy"), call the 'displayNamedContent' tool with mode='song'.
-               - CRITICAL: IMMEDIATELY after calling the tool, START SINGING the first verse and chorus of the song.
-               - Sing with a clear, melodic, female voice. Do not just speak the lyrics, sing them rhythmically.
+               - When the user asks for a song (e.g., "Sing Amazing Grace", "Show Holy Holy Holy"), FIRST call the 'displayNamedContent' tool with mode='song' to show lyrics.
+               - THEN, IMMEDIATELY START SINGING.
+               - **SINGING STYLE**: 
+                 - Sing clearly and rhythmically in a slow, steady tempo suitable for a congregation to follow.
+                 - Sustain your vowels to create a true singing effect.
+                 - Do not speak the lyrics fast; adopt a musical, choral tone.
+                 - Sing the first verse and the chorus.
             
             2. **Verses, Stories, Parables**: 
                - Call the appropriate tool ('revealScripture', 'displayNamedContent').
-               - REMAIN SILENT. Do not read the text aloud. Do not say "Here is the verse". Just trigger the tool.
+               - REMAIN SILENT after calling the tool. Do not read the scripture aloud unless explicitly asked to "Read it".
             
-            3. **Navigation**:
-               - Handle "Go Home", "Show Bible", etc. using 'switchTab'.
-               - Remain silent.
+            3. **Navigation & Commands**:
+               - Execute commands silently using tools.
                
             4. **Reading Control**:
                - If user says "Read it", call 'controlReading' with 'start'.
-               - If user says "Stop", call 'controlReading' with 'stop'.
                - Remain silent.
           `,
         },
@@ -217,8 +221,9 @@ export class GeminiLiveService {
 
       this.sessionPromise = this.ai!.live.connect(config);
       // Catch initial connection rejections to prevent unhandled rejection errors
-      // Real errors are handled in callbacks.onerror
-      this.sessionPromise.catch(() => {});
+      this.sessionPromise.catch((e) => {
+          console.error("Connection failed:", e);
+      });
 
     } catch (err) {
       this.disconnect(); // Ensure cleanup if initialization fails
